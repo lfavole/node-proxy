@@ -246,19 +246,74 @@ function proxyWebSocket(app, req, socket, head) {
     });
 }
 
-function extractSubdomain(host) {
-    if (!host) return null;
-    const cleanHost = host.split(":")[0].toLowerCase();
-    const domain = config.DOMAIN.toLowerCase();
-
-    if (cleanHost == domain) return null;
-    if (cleanHost.endsWith(`.${domain}`)) {
-        return cleanHost.slice(0, -(domain.length + 1));
+/**
+ * Resolves the target application name for an incoming HTTP Host header.
+ * Seamlessly handles dedicated domains (e.g. example.com), domain mappings,
+ * apex/root domain access, and subdomains (e.g. app.domain.com).
+ */
+function resolveAppTarget(host) {
+    if (!host) {
+        return config.DEFAULT_APP;
     }
 
-    // Local development support (e.g., app.localhost)
+    const cleanHost = host.split(":")[0].toLowerCase();
+    const domain = (config.DOMAIN || "").toLowerCase();
+
+    // 1. Direct match: folder named exactly as the full domain (e.g. "example.com")
+    if (config.apps.has(cleanHost)) {
+        return cleanHost;
+    }
+
+    // 2. Custom domain mapping in config.DOMAIN_MAPPINGS
+    if (config.DOMAIN_MAPPINGS && config.DOMAIN_MAPPINGS[cleanHost]) {
+        return config.DOMAIN_MAPPINGS[cleanHost];
+    }
+
+    // 3. Subdomain extraction relative to configured main DOMAIN
+    if (domain && cleanHost.endsWith(`.${domain}`)) {
+        const sub = cleanHost.slice(0, -(domain.length + 1));
+        if (config.apps.has(sub)) {
+            return sub;
+        }
+    }
+
+    // 4. Local development subdomain support (e.g. app.localhost)
     if (cleanHost.endsWith(".localhost")) {
-        return cleanHost.slice(0, -".localhost".length);
+        const sub = cleanHost.slice(0, -".localhost".length);
+        if (config.apps.has(sub)) {
+            return sub;
+        }
+    }
+
+    // 5. Naked root domain or www access (e.g. lfavole.fr or www.lfavole.fr)
+    if (domain && (cleanHost == domain || cleanHost == `www.${domain}`)) {
+        if (config.apps.has(domain)) return domain;
+        if (config.apps.has("www")) return "www";
+        if (config.apps.has("root")) return "root";
+        if (config.DEFAULT_APP && config.apps.has(config.DEFAULT_APP)) return config.DEFAULT_APP;
+    }
+
+    // 6. Generic www. prefix stripping fallback (e.g. www.otherdomain.com -> otherdomain.com)
+    if (cleanHost.startsWith("www.")) {
+        const apex = cleanHost.slice(4);
+        if (config.apps.has(apex)) return apex;
+        if (config.DOMAIN_MAPPINGS && config.DOMAIN_MAPPINGS[apex]) {
+            return config.DOMAIN_MAPPINGS[apex];
+        }
+    }
+
+    // 7. Strip domain extension / TLD fallback (e.g. my-app.com -> my-app)
+    const dotIdx = cleanHost.lastIndexOf(".");
+    if (dotIdx > 0) {
+        const nameWithoutTld = cleanHost.slice(0, dotIdx);
+        if (!nameWithoutTld.includes(".") && config.apps.has(nameWithoutTld)) {
+            return nameWithoutTld;
+        }
+    }
+
+    // 8. Default application fallback
+    if (config.DEFAULT_APP && config.apps.has(config.DEFAULT_APP)) {
+        return config.DEFAULT_APP;
     }
 
     return null;
@@ -276,36 +331,29 @@ function startServer() {
 
         // Status and health monitoring routing
         if (host.startsWith("status.") || pathname.startsWith("/_status") || pathname.startsWith("/status")) {
-            if (pathname == "/status/data" || pathname == "/_status/data") {
-                await statusApp.serveStatusData(req, res);
-                return;
-            }
-            await statusApp.serveStatusPage(req, res);
+            await statusApp.handleRequest(req, res);
             return;
-        }
-
-        let subdomain = extractSubdomain(host);
-
-        // Fallback for root domain, direct IP, or localhost access
-        if (!subdomain) {
-            if (config.DEFAULT_APP && config.apps.has(config.DEFAULT_APP)) {
-                subdomain = config.DEFAULT_APP;
-            } else if (config.apps.has("www")) {
-                subdomain = "www";
-            } else {
-                // Neutral response for root domain without exposing server internals
-                res.writeHead(200, {
-                    "Content-Type": "text/html; charset=utf-8",
-                });
-                res.end("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Proxy Service</title><style>body{font-family:sans-serif;margin:40px;color:#333}</style></head><body><h1>Proxy Service Online</h1><p>Reverse proxy gateway is operational.</p><p><a href=\"/status\">Status Page</a></p></body></html>");
-                return;
-            }
         }
 
         // Asynchronous non-blocking application refresh (throttled)
         await refreshKnownApps();
 
-        const appInstance = config.apps.get(subdomain);
+        const appTarget = resolveAppTarget(host);
+
+        // Fallback for root domain, direct IP, or localhost access
+        if (!appTarget) {
+            // Neutral response for root domain without exposing server internals
+            res.writeHead(200, {
+                "Content-Type": "text/html; charset=utf-8",
+            });
+            res.end("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Proxy Service</title><style>body{font-family:sans-serif;margin:40px;color:#333}</style></head><body><h1>Proxy Service Online</h1><p>Reverse proxy gateway is operational.</p><p><a href=\"/status\">Status Page</a></p></body></html>");
+            return;
+        }
+
+        // Asynchronous non-blocking application refresh (throttled)
+        await refreshKnownApps();
+
+        const appInstance = config.apps.get(appTarget);
         if (!appInstance) {
             res.writeHead(404, {
                 "Content-Type": "text/plain; charset=utf-8",
@@ -351,7 +399,7 @@ function startServer() {
                         const isHuman = isBrowserNav || (!req.headers["sec-fetch-mode"] && prefersHtml);
 
                         if (isHuman) {
-                            await handleAppLoadingResponse(req, res, subdomain);
+                            await handleAppLoadingResponse(req, res, appTarget);
                             return;
                         }
 
@@ -384,11 +432,11 @@ function startServer() {
 
     server.on("upgrade", async (req, socket, head) => {
         const host = req.headers.host || "";
-        const subdomain = extractSubdomain(host);
-        if (!subdomain) return socket.destroy();
-
         await refreshKnownApps();
-        const appInstance = config.apps.get(subdomain);
+        const appTarget = resolveAppTarget(host);
+        if (!appTarget) return socket.destroy();
+
+        const appInstance = config.apps.get(appTarget);
         if (!appInstance) return socket.destroy();
 
         appInstance

@@ -2,86 +2,122 @@
 <html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>Proxy Status</title>
-    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js" defer></script>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            margin: 40px;
-            background: #f4f4f9;
-            color: #333;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            background: #fff;
-        }
-        th, td {
-            padding: 12px;
-            border: 1px solid #ddd;
-            text-align: left;
-        }
-        th {
-            background: #eee;
-        }
-        .total-card {
-            background: #fff;
-            padding: 20px;
-            margin-bottom: 20px;
-            border-radius: 4px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        }
-    </style>
+    <title>Node Proxy Status & Telemetry</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="/status/status.css">
+    <script src="/status/status.js" defer></script>
 </head>
 <body>
-    <div x-data="statusApp()">
-        <h1>Proxy Status</h1>
-        <div class="total-card">
-            <p>Main Proxy RAM: <strong x-text="data.proxyRam + ' MB'"></strong></p>
-            <p>Total RAM in Use (Proxy + Apps): <strong x-text="data.totalRam + ' MB'"></strong></p>
+    <div class="dashboard-container">
+        <!-- Top Bar -->
+        <header class="header-bar">
+            <div class="header-title">
+                <h1>
+                    <span class="pulse-indicator"></span>
+                    Node Proxy Telemetry
+                </h1>
+                <p>Autonomous Reverse Proxy & Sub-Applications Monitor</p>
+            </div>
+            <div class="header-actions">
+                <a href="/status/logout" class="btn">Log Out</a>
+            </div>
+        </header>
+
+        <!-- KPI Grid -->
+        <section class="kpi-grid">
+            <div class="kpi-card">
+                <div class="kpi-label">Proxy RAM</div>
+                <div class="kpi-value" id="kpiProxyRam">-</div>
+                <div class="kpi-subtext">Isolated reverse proxy core</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">Total System RAM</div>
+                <div class="kpi-value" id="kpiTotalRam">-</div>
+                <div class="kpi-subtext">Proxy + active sub-processes</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">Proxy Uptime</div>
+                <div class="kpi-value" id="kpiUptime">-</div>
+                <div class="kpi-subtext">Elapsed since last restart</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">Active Applications</div>
+                <div class="kpi-value" id="kpiActiveApps">-</div>
+                <div class="kpi-subtext">Currently listening on ports</div>
+            </div>
+        </section>
+
+        <!-- RAM Evolution Zoomable Chart Panel -->
+        <section class="chart-panel">
+            <div class="chart-header">
+                <div class="chart-title">
+                    <h2>RAM Usage Evolution</h2>
+                    <p>Interactive timeline (Scroll to zoom, drag to pan through time)</p>
+                </div>
+                <div class="chart-toolbar">
+                    <div class="btn-group">
+                        <button type="button" class="btn" data-zoom="5m">5 min</button>
+                        <button type="button" class="btn" data-zoom="15m">15 min</button>
+                        <button type="button" class="btn" data-zoom="1h">1 hour</button>
+                        <button type="button" class="btn active" data-zoom="all">All</button>
+                    </div>
+                </div>
+            </div>
+            <div class="canvas-container">
+                <canvas id="ramChart"></canvas>
+                <div id="chartTooltip" class="chart-tooltip"></div>
+            </div>
+            <div id="chartLegend" class="chart-legend"></div>
+        </section>
+
+        <!-- Application Launch Periods Timeline Panel -->
+        <section class="chart-panel">
+            <div class="chart-header">
+                <div class="chart-title">
+                    <h2>Application Launch Periods</h2>
+                    <p>Lifecycle state timeline: Yellow = Starting, Green = Running, Red = Crash, Gray = Stopped</p>
+                </div>
+            </div>
+            <div class="canvas-container timeline-wrap">
+                <canvas id="timelineChart"></canvas>
+            </div>
+        </section>
+
+        <!-- Detailed Tables & Restarts Grid -->
+        <div class="grid-two-col">
+            <!-- Applications Table -->
+            <div class="table-wrap">
+                <div class="table-header">
+                    <h3>Discovered Applications</h3>
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Application</th>
+                            <th>Type</th>
+                            <th>Status</th>
+                            <th>Port</th>
+                            <th>RAM</th>
+                        </tr>
+                    </thead>
+                    <tbody id="appsTableBody">
+                        <tr>
+                            <td colspan="5" style="text-align:center; color:#64748b; padding:20px;">Scanning applications...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Proxy Restarts Timeline -->
+            <div class="table-wrap">
+                <div class="table-header">
+                    <h3>Recent Proxy Restarts</h3>
+                </div>
+                <ul id="restartsList" class="restarts-list">
+                    <li class="restart-item" style="color:#64748b;">Loading restarts history...</li>
+                </ul>
+            </div>
         </div>
-        <table>
-            <thead>
-                <tr>
-                    <th>Application</th>
-                    <th>Type</th>
-                    <th>Status</th>
-                    <th>Port</th>
-                    <th>RAM</th>
-                </tr>
-            </thead>
-            <tbody>
-                <template x-for="app in data.apps">
-                    <tr>
-                        <td x-text="app.name"></td>
-                        <td x-text="app.type"></td>
-                        <td x-text="app.status"></td>
-                        <td x-text="app.port"></td>
-                        <td x-text="app.ram != '-' ? app.ram + ' MB' : '-'"></td>
-                    </tr>
-                </template>
-            </tbody>
-        </table>
     </div>
-    <script>
-    function statusApp() {
-        return {
-            data: {
-                proxyRam: 0,
-                totalRam: 0,
-                apps: [],
-            },
-            async fetchStatus() {
-                const res = await fetch("/status/data");
-                this.data = await res.json();
-            },
-            init() {
-                this.fetchStatus();
-                // Refresh status metrics every 5 seconds
-                setInterval(() => this.fetchStatus(), 5000);
-            },
-        };
-    }
-    </script>
 </body>
 </html>

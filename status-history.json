@@ -1,0 +1,14 @@
+{
+    "restarts": [
+        {
+            "timestamp": 1793883689980,
+            "reason": "startup"
+        },
+        {
+            "timestamp": 1793883733956,
+            "reason": "startup"
+        }
+    ],
+    "appEvents": [],
+    "ramHistory": []
+}

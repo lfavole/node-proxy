@@ -13,6 +13,32 @@ const config = require("./config");
 const metrics = require("./metrics");
 
 class App {
+    static eventListeners = [];
+
+    /**
+     * Broadcasts application lifecycle state changes to telemetry listeners.
+     */
+    static emitAppEvent(appName, event, details = {}) {
+        const payload = {
+            app: appName,
+            event,
+            timestamp: Date.now(),
+            details,
+        };
+        for (const listener of App.eventListeners) {
+            try {
+                listener(payload);
+            } catch (_) {}
+        }
+    }
+
+    /**
+     * Registers a listener for application lifecycle events.
+     */
+    static onAppEvent(listener) {
+        App.eventListeners.push(listener);
+    }
+
     constructor(name, fullPath) {
         this.name = name;
         this.path = fullPath;
@@ -123,6 +149,7 @@ class App {
             isProcessAlive = false;
             processExitError = err;
             console.error(`[${this.name} CRITICAL] Spawn error: ${err.message}`);
+            App.emitAppEvent(this.name, "crash", { error: err.message });
             this.status = "stopped";
             this.port = null;
             this.process = null;
@@ -135,6 +162,7 @@ class App {
                 processExitError = new Error(`Process terminated unexpectedly with code ${code}`);
             }
             console.log(`[${this.name} LOG] Process stopped (Code: ${code}, Signal: ${signal})`);
+            App.emitAppEvent(this.name, (code != 0 && code != null) ? "crash" : "stopped", { code, signal });
 
             // Reset state immediately to allow automatic restart on the next incoming request
             this.status = "stopped";
@@ -152,6 +180,7 @@ class App {
         this.process = proc;
         this.port = port;
         this.status = "start";
+        App.emitAppEvent(this.name, "start", { port });
 
         // Wait for health check confirmation or immediate failure
         const ready = await new Promise(async (resolve) => {
@@ -178,6 +207,7 @@ class App {
         }
 
         this.status = "running";
+        App.emitAppEvent(this.name, "running", { port: this.port });
         this.lastAccessed = Date.now();
         this.startPromise = null;
         // Always return the application instance
@@ -207,6 +237,7 @@ class App {
             if (ready) {
                 clearInterval(interval);
                 this.status = "running";
+                App.emitAppEvent(this.name, "running", { port: this.port });
                 this.lastAccessed = Date.now();
                 console.log(`[PROXY] Application ${this.name} started in background on port ${this.port}.`);
                 return;
@@ -311,6 +342,7 @@ class App {
         this.port = null;
         this.process = null;
         this.startPromise = null;
+        App.emitAppEvent(this.name, "stopped", {});
     }
 }
 

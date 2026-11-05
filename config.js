@@ -14,6 +14,32 @@ const START_PORT = parseInt(process.env.START_PORT, 10) || 3001;
 const DOMAIN = process.env.DOMAIN || "lfavole.fr";
 // Optional default application served for root domain or direct IP access
 const DEFAULT_APP = process.env.DEFAULT_APP || null;
+// Status page password protection (empty string disables password prompt)
+const STATUS_PASSWORD = process.env.STATUS_PASSWORD || "";
+
+// Custom domain to application mappings (e.g. JSON or 'example.com:node-app,api.org:python-app')
+let DOMAIN_MAPPINGS = {};
+if (process.env.DOMAIN_MAPPINGS) {
+    try {
+        if (process.env.DOMAIN_MAPPINGS.trim().startsWith("{")) {
+            DOMAIN_MAPPINGS = JSON.parse(process.env.DOMAIN_MAPPINGS);
+        } else {
+            const pairs = process.env.DOMAIN_MAPPINGS.split(",");
+            for (const pair of pairs) {
+                const parts = pair.split(":");
+                if (parts.length >= 2) {
+                    const domainKey = parts[0].trim().toLowerCase();
+                    const appVal = parts[1].trim();
+                    if (domainKey && appVal) {
+                        DOMAIN_MAPPINGS[domainKey] = appVal;
+                    }
+                }
+            }
+        }
+    } catch (_) {
+        DOMAIN_MAPPINGS = {};
+    }
+}
 
 const MAX_RETRIES = 5;
 const RETRY_DELAY = 150;
@@ -53,6 +79,8 @@ module.exports = {
     START_PORT,
     DOMAIN,
     DEFAULT_APP,
+    STATUS_PASSWORD,
+    DOMAIN_MAPPINGS,
     MAX_RETRIES,
     RETRY_DELAY,
     HEALTH_CHECK_INTERVAL,

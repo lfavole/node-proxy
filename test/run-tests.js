@@ -71,6 +71,8 @@ async function runTestSuite() {
             START_PORT: "4100",
             APPS_DIR: MOCK_APPS_DIR,
             DOMAIN: "test.local",
+            STATUS_PASSWORD: "testpassword",
+            DOMAIN_MAPPINGS: "python-app.org:python-app,node-app.io:node-app",
         }),
         stdio: "inherit",
     });
@@ -274,21 +276,74 @@ async function runTestSuite() {
             }
         });
 
-        // TEST 8: Status Endpoint and RAM Telemetry
-        await assertTest("Monitoring: Endpoint /status/data with Linux /proc memory telemetry", async () => {
-            const res = await makeRequest({
+        // TEST 8: Status Password Protection & Telemetry Data
+        await assertTest("Security & Telemetry: Status password authentication and historical metrics", async () => {
+            // 1. Unauthorized request must be rejected with 401
+            const unauthRes = await makeRequest({
                 path: "/status/data",
                 headers: {
                     Host: "test.local",
                 },
             });
-            if (res.statusCode !== 200) throw new Error(`Status endpoint failed: ${res.statusCode}`);
+            if (unauthRes.statusCode != 401) {
+                throw new Error(`Expected 401 Unauthorized without password, got ${unauthRes.statusCode}`);
+            }
+
+            // 2. Authorized request with Basic Auth must succeed
+            const authHeader = "Basic " + Buffer.from(":testpassword").toString("base64");
+            const res = await makeRequest({
+                path: "/status/data",
+                headers: {
+                    Host: "test.local",
+                    Authorization: authHeader,
+                },
+            });
+            if (res.statusCode != 200) throw new Error(`Status endpoint failed: ${res.statusCode}`);
             const data = JSON.parse(res.body);
-            if (typeof data.proxyRam !== "number" || typeof data.totalRam !== "number") {
+            if (typeof data.proxyRam != "number" || typeof data.totalRam != "number") {
                 throw new Error("Invalid memory telemetry data");
             }
             if (!Array.isArray(data.apps)) throw new Error("Applications list missing in telemetry");
-            console.log(` (Proxy RAM: ${data.proxyRam} MB | Total RAM: ${data.totalRam} MB)`);
+            if (!Array.isArray(data.ramHistory)) throw new Error("RAM history missing in telemetry");
+            if (!Array.isArray(data.appEvents)) throw new Error("App events missing in telemetry");
+            if (!Array.isArray(data.restarts)) throw new Error("Restarts list missing in telemetry");
+            console.log(` (Proxy RAM: ${data.proxyRam} MB | Total RAM: ${data.totalRam} MB | Restarts: ${data.restarts.length})`);
+        });
+
+        // TEST 8b: Dedicated Domain Routing (Not Subdomains)
+        await assertTest("Routing: Dedicated domain matching via DOMAIN_MAPPINGS and TLD stripping", async () => {
+            // Test 1: Via explicit DOMAIN_MAPPINGS (python-app.org -> python-app)
+            const resMapped = await makeRequest({
+                path: "/",
+                headers: {
+                    Host: "python-app.org",
+                },
+            });
+            if (resMapped.statusCode != 200 || !resMapped.body.includes('"runtime": "python"')) {
+                throw new Error(`Expected Python app on python-app.org, got ${resMapped.statusCode} (${resMapped.body.slice(0, 50)})`);
+            }
+
+            // Test 2: Via generic TLD stripping (python-app.fr -> matches folder python-app)
+            const resTld = await makeRequest({
+                path: "/",
+                headers: {
+                    Host: "python-app.fr",
+                },
+            });
+            if (resTld.statusCode != 200 || !resTld.body.includes('"runtime": "python"')) {
+                throw new Error(`Expected Python app on python-app.fr via TLD strip, got ${resTld.statusCode} (${resTld.body.slice(0, 50)})`);
+            }
+
+            // Test 3: Status assets delivery
+            const resCss = await makeRequest({
+                path: "/status/status.css",
+                headers: {
+                    Host: "test.local",
+                },
+            });
+            if (resCss.statusCode != 200 || !resCss.body.includes("dashboard-container")) {
+                throw new Error(`Failed delivering /status/status.css (code: ${resCss.statusCode})`);
+            }
         });
 
         // TEST 9: Load Test
