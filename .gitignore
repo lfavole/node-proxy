@@ -11,3 +11,5 @@ logs/
 .DS_Store
 *.swp
 *~
+loading-stats.json
+status-history.json
