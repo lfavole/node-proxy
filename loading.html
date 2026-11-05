@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Application en cours de chargement...</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            text-align: center;
+            margin-top: 100px;
+            background: #fafafa;
+            color: #555;
+        }
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="loader"></div>
+    <h2>L'application ${appName} démarre.</h2>
+    <p>Veuillez patienter, cette page se rechargera automatiquement dès qu'elle sera prête.</p>
+    <script>
+        // Vérification cyclique en tâche de fond
+        setInterval(async () => {
+            try {
+                const response = await fetch("/_hc", { method: 'HEAD', cache: 'no-store' });
+                // Si le serveur répond hors code 404 (on ne peut pas utiliser le code 200,
+                // utilisé par la page de maintenance Infomaniak), on recharge la page
+                if (response.status == 404) {
+                    window.location.reload();
+                }
+            } catch (e) {
+                // Consomme l'erreur réseau si le serveur ne répond temporairement pas
+            }
+        }, 1500);
+    </script>
+</body>
+</html>

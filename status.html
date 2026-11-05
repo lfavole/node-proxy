@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8">
+    <title>Proxy Status</title>
+    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js" defer></script>
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 40px;
+            background: #f4f4f9;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 12px;
+            border: 1px solid #ddd;
+            text-align: left;
+        }
+        th {
+            background: #eee;
+        }
+        .total-card {
+            background: #fff;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+    </style>
+</head>
+<body>
+    <div x-data="statusApp()">
+        <h1>État du Proxy</h1>
+        <div class="total-card">
+            <p>RAM du Proxy principal : <strong x-text="data.proxyRam + ' Mo'"></strong></p>
+            <p>RAM Totale utilisée (Proxy + Apps) : <strong x-text="data.totalRam + ' Mo'"></strong></p>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Application</th>
+                    <th>Type</th>
+                    <th>Statut</th>
+                    <th>Port</th>
+                    <th>RAM</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="app in data.apps">
+                    <tr>
+                        <td x-text="app.name"></td>
+                        <td x-text="app.type"></td>
+                        <td x-text="app.status"></td>
+                        <td x-text="app.port"></td>
+                        <td x-text="app.ram != '-' ? app.ram + ' Mo' : '-'"></td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </div>
+    <script>
+    function statusApp() {
+        return {
+            data: { proxyRam: 0, totalRam: 0, apps: [] },
+            async fetchStatus() {
+                const res = await fetch('/status/data');
+                this.data = await res.json();
+            },
+            init() {
+                this.fetchStatus();
+                setInterval(() => this.fetchStatus(), 5000);
+            }
+        };
+    }
+    </script>
+</body>
+</html>
