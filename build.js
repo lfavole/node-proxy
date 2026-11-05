@@ -12,7 +12,7 @@ const { refreshKnownApps } = require("./app");
 async function performBuild() {
     console.log("[BUILD] Starting compile and build process...");
     // Refresh known applications list with forced scan
-    refreshKnownApps(true);
+    await refreshKnownApps(true);
 
     for (const [name, app] of config.apps.entries()) {
         console.log(`\n[BUILD] Checking application: ${name} (${app.type})`);

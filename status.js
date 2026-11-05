@@ -1,10 +1,11 @@
 /**
  * @file status.js
  * @description System metrics and status page handler with fast non-blocking memory telemetry.
- * Reads Linux /proc/<pid>/statm natively without spawning external subprocesses.
+ * 100% asynchronous: reads Linux /proc/<pid>/statm without blocking disk or event loop.
  */
 
 const fs = require("fs");
+const fsp = require("fs").promises;
 const path = require("path");
 const child_process = require("child_process");
 const config = require("./config");
@@ -17,14 +18,14 @@ class StatusApp extends App {
     }
 
     /**
-     * Reads RSS memory in MB synchronously and fast on Linux via /proc.
+     * Asynchronously reads RSS memory in MB on Linux via /proc without blocking.
      */
-    getAppRam(pid) {
+    async getAppRam(pid) {
         if (!pid) return 0;
 
-        // Native Linux optimization: direct read of /proc/<pid>/statm
+        // Native Linux async optimization: non-blocking read of /proc/<pid>/statm
         try {
-            const statm = fs.readFileSync(`/proc/${pid}/statm`, "utf8");
+            const statm = await fsp.readFile(`/proc/${pid}/statm`, "utf8");
             const residentPages = parseInt(statm.trim().split(/\s+/)[1], 10);
             if (!isNaN(residentPages)) {
                 // Page size = 4096 bytes (4 KB) -> Convert to MB
@@ -34,30 +35,35 @@ class StatusApp extends App {
             // Fallback for macOS or environments without /proc
         }
 
-        // Subprocess fallback
-        try {
-            if (process.platform === "win32") return 0;
-            const output = child_process.execSync(`ps -o rss= -p ${pid}`, {
-                encoding: "utf8",
-                timeout: 500,
-            });
-            const rssKb = parseInt(output.trim(), 10);
-            return isNaN(rssKb) ? 0 : Math.round(rssKb / 1024);
-        } catch {
-            return 0;
-        }
+        // Asynchronous non-blocking subprocess fallback
+        return new Promise((resolve) => {
+            if (process.platform === "win32") return resolve(0);
+            child_process.exec(
+                `ps -o rss= -p ${pid}`,
+                {
+                    timeout: 600,
+                },
+                (err, stdout) => {
+                    if (err) return resolve(0);
+                    const rssKb = parseInt((stdout || "").trim(), 10);
+                    resolve(isNaN(rssKb) ? 0 : Math.round(rssKb / 1024));
+                },
+            );
+        });
     }
 
-    serveStatusData(req, res) {
-        refreshKnownApps();
-        const proxyRam = this.getAppRam(process.pid) || Math.round(process.memoryUsage().rss / (1024 * 1024));
+    async serveStatusData(req, res) {
+        await refreshKnownApps();
+        const proxyRam =
+            (await this.getAppRam(process.pid)) || Math.round(process.memoryUsage().rss / (1024 * 1024));
         let totalRam = proxyRam;
         const appsList = [];
 
-        for (const [name, app] of config.apps.entries()) {
+        const appEntries = Array.from(config.apps.entries());
+        for (const [name, app] of appEntries) {
             let ramVal = 0;
             if (app.process?.pid) {
-                ramVal = this.getAppRam(app.process.pid);
+                ramVal = await this.getAppRam(app.process.pid);
                 totalRam += ramVal;
             }
             appsList.push({
@@ -83,14 +89,15 @@ class StatusApp extends App {
         res.end(payload);
     }
 
-    serveStatusPage(req, res) {
+    async serveStatusPage(req, res) {
         const htmlPath = path.join(__dirname, "status.html");
-        if (fs.existsSync(htmlPath)) {
+        try {
+            await fsp.access(htmlPath);
             res.writeHead(200, {
                 "Content-Type": "text/html; charset=utf-8",
             });
             fs.createReadStream(htmlPath).pipe(res);
-        } else {
+        } catch {
             res.writeHead(404, {
                 "Content-Type": "text/plain; charset=utf-8",
             });

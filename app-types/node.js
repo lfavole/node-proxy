@@ -1,11 +1,24 @@
 /**
  * @file app-types/node.js
  * @description Node.js sub-application lifecycle manager supporting root and /server structures.
+ * Fully asynchronous to eliminate synchronous disk I/O bottlenecks.
  */
 
-const fs = require("fs");
+const fs = require("fs").promises;
 const path = require("path");
 const App = require("../app-base");
+
+/**
+ * Asynchronously checks if a file exists without blocking.
+ */
+async function fileExists(filePath) {
+    try {
+        await fs.access(filePath);
+        return true;
+    } catch {
+        return false;
+    }
+}
 
 class NodeApp extends App {
     constructor(name, fullPath) {
@@ -13,13 +26,13 @@ class NodeApp extends App {
         this.type = "node";
     }
 
-    _resolveNodePaths() {
+    async _resolveNodePaths() {
         let cwd = this.path;
         let pkgPath = path.join(this.path, "package.json");
 
-        if (!fs.existsSync(pkgPath)) {
+        if (!(await fileExists(pkgPath))) {
             const nestedPkg = path.join(this.path, "server", "package.json");
-            if (fs.existsSync(nestedPkg)) {
+            if (await fileExists(nestedPkg)) {
                 pkgPath = nestedPkg;
                 cwd = path.join(this.path, "server");
             }
@@ -31,16 +44,17 @@ class NodeApp extends App {
     }
 
     async startApp() {
-        const { cwd, pkgPath } = this._resolveNodePaths();
+        const { cwd, pkgPath } = await this._resolveNodePaths();
         let command = "npm";
         let args = [
             "run",
             "start",
         ];
 
-        if (fs.existsSync(pkgPath)) {
+        if (await fileExists(pkgPath)) {
             try {
-                const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+                const rawPkg = await fs.readFile(pkgPath, "utf8");
+                const pkg = JSON.parse(rawPkg);
                 if (pkg.scripts?.prod) {
                     args = [
                         "run",
@@ -74,7 +88,7 @@ class NodeApp extends App {
     }
 
     async buildApp() {
-        const { cwd, pkgPath } = this._resolveNodePaths();
+        const { cwd, pkgPath } = await this._resolveNodePaths();
         console.log(`[BUILD] Installing Node dependencies in ${cwd}...`);
 
         const installSuccess = await this.runBuildCommand(
@@ -94,9 +108,10 @@ class NodeApp extends App {
             return false;
         }
 
-        if (fs.existsSync(pkgPath)) {
+        if (await fileExists(pkgPath)) {
             try {
-                const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+                const rawPkg = await fs.readFile(pkgPath, "utf8");
+                const pkg = JSON.parse(rawPkg);
                 if (pkg.scripts?.build) {
                     console.log(`[BUILD] Running npm run build for ${this.name}...`);
                     await this.runBuildCommand(

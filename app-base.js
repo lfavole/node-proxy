@@ -2,6 +2,7 @@
  * @file app-base.js
  * @description Abstract base class managing lifecycle, networking, and concurrency.
  * Provides process group isolation, graceful shutdowns, and automatic restart handling.
+ * Integrates cold start duration tracking using Exponential Moving Average.
  */
 
 const child_process = require("child_process");
@@ -9,6 +10,7 @@ const http = require("http");
 const net = require("net");
 const readline = require("readline");
 const config = require("./config");
+const metrics = require("./metrics");
 
 class App {
     constructor(name, fullPath) {
@@ -250,9 +252,16 @@ class App {
             throw new Error("Application is still loading");
         }
 
+        const bootStartTime = Date.now();
+
         // Launch initialization with a shared promise lock
         this.startPromise = this.startApp()
-            .then(() => this)
+            .then(async () => {
+                const elapsed = Date.now() - bootStartTime;
+                // Record startup duration asynchronously for the progress bar
+                await metrics.recordLoadingDuration(this.name, elapsed);
+                return this;
+            })
             .catch((err) => {
                 this.startPromise = null;
                 throw err;

@@ -1,10 +1,11 @@
 /**
  * @file server.js
  * @description High-performance HTTP and WebSocket reverse proxy server.
- * Optimized for minimal RAM footprint, zero external dependencies, and direct streaming.
+ * 100% asynchronous: eliminates all synchronous disk calls to prevent I/O blocking.
+ * Features multi-language loading pages and EMA progress bar estimations.
  */
 
-const fs = require("fs");
+const fs = require("fs").promises;
 const http = require("http");
 const net = require("net");
 const path = require("path");
@@ -12,42 +13,128 @@ const stream = require("stream");
 const config = require("./config");
 const { refreshKnownApps } = require("./app");
 const statusApp = require("./status");
+const metrics = require("./metrics");
 
 // In-memory cache of the loading HTML template to avoid repeated disk reads
 let cachedLoadingTemplate = null;
 
-function getLoadingTemplate() {
+// Multi-language localization dictionary for loading screens
+const I18N = {
+    en: {
+        title: "Application Loading",
+        heading: "Application is starting",
+        message: "Please wait, this page will reload automatically once ready.",
+        estLabel: "Estimated start time:",
+        secLabel: "sec",
+    },
+    fr: {
+        title: "Chargement de l'application",
+        heading: "L'application démarre",
+        message: "Veuillez patienter, cette page se rechargera automatiquement dès qu'elle sera prête.",
+        estLabel: "Temps estimé :",
+        secLabel: "s",
+    },
+    es: {
+        title: "Cargando aplicación",
+        heading: "La aplicación se está iniciando",
+        message: "Por favor espere, esta página se recargará automáticamente cuando esté lista.",
+        estLabel: "Tiempo estimado:",
+        secLabel: "s",
+    },
+    de: {
+        title: "Anwendung lädt",
+        heading: "Die Anwendung wird gestartet",
+        message: "Bitte warten Sie, diese Seite wird automatisch neu geladen, sobald sie bereit ist.",
+        estLabel: "Geschätzte Startzeit:",
+        secLabel: "Sek.",
+    },
+    it: {
+        title: "Caricamento applicazione",
+        heading: "L'applicazione si sta avviando",
+        message: "Attendere prego, la pagina si ricaricherà automaticamente quando pronta.",
+        estLabel: "Tempo stimato:",
+        secLabel: "s",
+    },
+    pt: {
+        title: "Carregando aplicativo",
+        heading: "O aplicativo está iniciando",
+        message: "Por favor aguarde, esta página será recarregada automaticamente quando pronta.",
+        estLabel: "Tempo estimado:",
+        secLabel: "s",
+    },
+};
+
+/**
+ * Detects the user's preferred language from the HTTP Accept-Language header.
+ */
+function detectLanguage(header) {
+    if (!header) return "en";
+    const clean = header.toLowerCase();
+    const supported = [
+        "fr",
+        "es",
+        "de",
+        "it",
+        "pt",
+    ];
+
+    for (const code of supported) {
+        if (clean.startsWith(code) || clean.includes(code + ",") || clean.includes(code + ";")) {
+            return code;
+        }
+    }
+    return "en";
+}
+
+/**
+ * Asynchronously loads and caches the template without blocking the event loop.
+ */
+async function getLoadingTemplate() {
     if (cachedLoadingTemplate) return cachedLoadingTemplate;
+
     const minPath = path.join(__dirname, "loading.min.html");
     const stdPath = path.join(__dirname, "loading.html");
-    const target = [
-        minPath,
-        stdPath,
-    ].find((p) => fs.existsSync(p));
 
-    if (target) {
-        cachedLoadingTemplate = fs.readFileSync(target, "utf8");
+    try {
+        cachedLoadingTemplate = await fs.readFile(minPath, "utf8");
+        return cachedLoadingTemplate;
+    } catch {
+        try {
+            cachedLoadingTemplate = await fs.readFile(stdPath, "utf8");
+            return cachedLoadingTemplate;
+        } catch {
+            return null;
+        }
     }
-    return cachedLoadingTemplate;
 }
 
-function escapeHtml(str) {
-    return String(str)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
-}
+/**
+ * Serves the localized loading screen with an animated progress bar based on EMA.
+ */
+async function handleAppLoadingResponse(req, res, appName) {
+    const template = await getLoadingTemplate();
+    const langCode = detectLanguage(req.headers["accept-language"]);
+    const text = I18N[langCode] || I18N.en;
 
-function handleAppLoadingResponse(res, appName) {
-    const template = getLoadingTemplate();
-    const safeName = escapeHtml(appName);
+    // Fetch the Exponential Moving Average loading estimation for this app
+    const estMs = await metrics.getEstimatedLoadingTime(appName);
+    const estSec = (estMs / 1000).toFixed(1);
+
     if (template) {
+        const rendered = template
+            .replace(/\${lang}/g, langCode)
+            .replace(/\${title}/g, text.title)
+            .replace(/\${heading}/g, text.heading)
+            .replace(/\${message}/g, text.message)
+            .replace(/\${estLabel}/g, text.estLabel)
+            .replace(/\${estSec}/g, estSec)
+            .replace(/\${secLabel}/g, text.secLabel)
+            .replace(/\${estMs}/g, estMs.toString());
+
         res.writeHead(503, {
             "Content-Type": "text/html; charset=utf-8",
         });
-        res.end(template.replace(/\${appName}/g, safeName));
+        res.end(rendered);
     } else {
         res.writeHead(503, {
             "Content-Type": "text/plain; charset=utf-8",
@@ -181,9 +268,10 @@ function extractSubdomain(host) {
 }
 
 function startServer() {
-    refreshKnownApps(true);
+    // Initial asynchronous scan of applications
+    refreshKnownApps(true).catch(() => {});
 
-    const server = http.createServer((req, res) => {
+    const server = http.createServer(async (req, res) => {
         const host = req.headers.host || "";
         const rawUrl = req.url;
         const qIdx = rawUrl.indexOf("?");
@@ -192,10 +280,10 @@ function startServer() {
         // Status and health monitoring routing
         if (host.startsWith("status.") || pathname.startsWith("/_status") || pathname.startsWith("/status")) {
             if (pathname === "/status/data" || pathname === "/_status/data") {
-                statusApp.serveStatusData(req, res);
+                await statusApp.serveStatusData(req, res);
                 return;
             }
-            statusApp.serveStatusPage(req, res);
+            await statusApp.serveStatusPage(req, res);
             return;
         }
 
@@ -217,8 +305,8 @@ function startServer() {
             }
         }
 
-        // Throttled scan for new applications
-        refreshKnownApps();
+        // Asynchronous non-blocking application refresh (throttled)
+        await refreshKnownApps();
 
         const appInstance = config.apps.get(subdomain);
         if (!appInstance) {
@@ -266,7 +354,7 @@ function startServer() {
                         const isHuman = isBrowserNav || (!req.headers["sec-fetch-mode"] && prefersHtml);
 
                         if (isHuman) {
-                            handleAppLoadingResponse(res, subdomain);
+                            await handleAppLoadingResponse(req, res, subdomain);
                             return;
                         }
 
@@ -297,12 +385,12 @@ function startServer() {
     server.keepAliveTimeout = 60000;
     server.headersTimeout = 30000;
 
-    server.on("upgrade", (req, socket, head) => {
+    server.on("upgrade", async (req, socket, head) => {
         const host = req.headers.host || "";
         const subdomain = extractSubdomain(host);
         if (!subdomain) return socket.destroy();
 
-        refreshKnownApps();
+        await refreshKnownApps();
         const appInstance = config.apps.get(subdomain);
         if (!appInstance) return socket.destroy();
 
