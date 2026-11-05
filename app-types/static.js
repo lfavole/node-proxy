@@ -1,19 +1,21 @@
 /**
  * @file app-types/static.js
- * @description Sert les fichiers statiques locaux directement via Node.js sans processus tiers.
+ * @description High-performance static file server without dependencies.
+ * Stream-based with strict Directory Traversal protection and zero URL allocation overhead.
  */
 
 const fs = require("fs");
 const path = require("path");
 const stream = require("stream");
-
 const App = require("../app-base");
 
-// Table de correspondance MIME étendue figée en mémoire pour éviter sa ré-allocation à chaque appel
+// Pre-allocated MIME table in memory
 const MIME_TYPES = {
     ".html": "text/html; charset=utf-8",
+    ".htm": "text/html; charset=utf-8",
     ".css": "text/css; charset=utf-8",
     ".js": "application/javascript; charset=utf-8",
+    ".mjs": "application/javascript; charset=utf-8",
     ".json": "application/json; charset=utf-8",
     ".svg": "image/svg+xml",
     ".png": "image/png",
@@ -22,81 +24,112 @@ const MIME_TYPES = {
     ".gif": "image/gif",
     ".ico": "image/x-icon",
     ".webp": "image/webp",
+    ".avif": "image/avif",
     ".woff": "font/woff",
     ".woff2": "font/woff2",
     ".ttf": "font/ttf",
+    ".otf": "font/otf",
     ".pdf": "application/pdf",
-    ".txt": "text/plain; charset=utf-8"
+    ".txt": "text/plain; charset=utf-8",
+    ".xml": "application/xml; charset=utf-8",
+    ".wasm": "application/wasm",
+    ".mp3": "audio/mpeg",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".csv": "text/csv; charset=utf-8",
+    ".zip": "application/zip",
 };
 
 class StaticApp extends App {
     constructor(name, fullPath) {
         super(name, fullPath);
-        // Typage applicatif explicite
         this.type = "static";
     }
 
-    /**
-     * Les applications statiques n'ont pas besoin de processus d'arrière-plan autonome.
-     */
     async startApp() {
-        // Passage immédiat en exécution active
         this.status = "running";
         this.startPromise = null;
         return this;
     }
 
-    /**
-     * Pas d'étape de compilation pour le contenu purement statique.
-     */
     async buildApp() {
-        console.log(`[BUILD] App ${this.name} of type static requires no compile steps.`);
+        console.log(`[BUILD] Static application ${this.name} requires no build steps.`);
         return true;
     }
 
     /**
-     * Analyse la requête et écrit le fichier en flux (Stream) vers le client HTTP.
-     * Version optimisée : Zéro allocation URL, I/O asynchrones non-bloquantes, sécurité Directory Traversal.
+     * Serves static files asynchronously via direct stream pipeline.
      */
     serveStaticApp(req, res) {
-        // Extraction du pathname purement textuelle sans charger le module 'url'
-        let reqPath = req.url.split('?')[0];
-        
-        // Redirection par défaut vers le point d'entrée
-        if (reqPath === "/") reqPath = "/index.html";
-        
-        const filePath = path.join(this.path, reqPath);
+        // Lightweight extraction of path without url.parse
+        const rawUrl = req.url;
+        const queryIdx = rawUrl.indexOf("?");
+        const pathOnly = queryIdx === -1 ? rawUrl : rawUrl.slice(0, queryIdx);
 
-        // Protection contre les attaques de type Directory Traversal
-        if (!filePath.startsWith(this.path)) {
-            res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
-            res.end("Accès interdit");
+        let decodedPath;
+        try {
+            decodedPath = decodeURIComponent(pathOnly);
+        } catch {
+            res.writeHead(400, {
+                "Content-Type": "text/plain; charset=utf-8",
+            });
+            res.end("Bad Request");
             return;
         }
 
-        // Utilisation de fs.stat (asynchrone)
+        if (decodedPath === "/" || decodedPath === "") {
+            decodedPath = "/index.html";
+        }
+
+        const safeRoot = path.resolve(this.path);
+        // Absolute normalization
+        const filePath = path.resolve(safeRoot, "." + path.normalize(decodedPath));
+
+        // Strict Directory Traversal boundary check
+        const relative = path.relative(safeRoot, filePath);
+        if (relative.startsWith("..") || path.isAbsolute(relative)) {
+            res.writeHead(403, {
+                "Content-Type": "text/plain; charset=utf-8",
+            });
+            res.end("Forbidden");
+            return;
+        }
+
+        // Prevent access to hidden files and directories (.git, .env)
+        const baseName = path.basename(filePath);
+        if (baseName.startsWith(".") && baseName !== ".well-known") {
+            res.writeHead(403, {
+                "Content-Type": "text/plain; charset=utf-8",
+            });
+            res.end("Forbidden");
+            return;
+        }
+
+        // Non-blocking file metadata inspection
         fs.stat(filePath, (err, stats) => {
-            // Si le fichier n'existe pas ou que c'est un dossier, on renvoie un 404 propre
             if (err || stats.isDirectory()) {
-                res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-                res.end("Fichier non trouvé");
+                res.writeHead(404, {
+                    "Content-Type": "text/plain; charset=utf-8",
+                });
+                res.end("Not Found");
                 return;
             }
 
             const ext = path.extname(filePath).toLowerCase();
-            const mime = MIME_TYPES[ext] || "application/octet-stream";
+            const contentType = MIME_TYPES[ext] || "application/octet-stream";
 
             res.writeHead(200, {
-                "Content-Type": mime,
-                // Indique la taille exacte au navigateur
+                "Content-Type": contentType,
                 "Content-Length": stats.size,
                 "Cache-Control": "public, max-age=3600",
             });
 
-            // Lecture asynchrone par morceaux (Stream)
+            // Direct streaming pipeline
             const fileStream = fs.createReadStream(filePath);
-            stream.pipeline(fileStream, res, (pipelineErr) => {
-                if (pipelineErr) console.error(`[STATIC PIPE ERR] ${pipelineErr.message}`);
+            stream.pipeline(fileStream, res, (pipeErr) => {
+                if (pipeErr && pipeErr.code !== "ERR_STREAM_PREMATURE_CLOSE") {
+                    console.error(`[STATIC STREAM ERR] ${pipeErr.message}`);
+                }
             });
         });
     }

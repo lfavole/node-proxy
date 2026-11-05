@@ -1,13 +1,12 @@
 /**
  * @file status.js
- * @description Sous-classe StatusApp en charge de l'interrogation système,
- * du calcul de l'empreinte RAM et de l'envoi de la page de statut.
+ * @description System metrics and status page handler with fast non-blocking memory telemetry.
+ * Reads Linux /proc/<pid>/statm natively without spawning external subprocesses.
  */
 
-const child_process = require("child_process");
 const fs = require("fs");
 const path = require("path");
-
+const child_process = require("child_process");
 const config = require("./config");
 const { App, refreshKnownApps } = require("./app");
 
@@ -18,26 +17,40 @@ class StatusApp extends App {
     }
 
     /**
-     * Calcule la consommation RAM d'un processus spécifique (RSS).
+     * Reads RSS memory in MB synchronously and fast on Linux via /proc.
      */
     getAppRam(pid) {
+        if (!pid) return 0;
+
+        // Native Linux optimization: direct read of /proc/<pid>/statm
         try {
-            if (!pid) return 0;
-            const output = child_process.execSync(`ps -o rss= -p ${pid}`, { encoding: "utf8" });
+            const statm = fs.readFileSync(`/proc/${pid}/statm`, "utf8");
+            const residentPages = parseInt(statm.trim().split(/\s+/)[1], 10);
+            if (!isNaN(residentPages)) {
+                // Page size = 4096 bytes (4 KB) -> Convert to MB
+                return Math.round((residentPages * 4) / 1024);
+            }
+        } catch (_) {
+            // Fallback for macOS or environments without /proc
+        }
+
+        // Subprocess fallback
+        try {
+            if (process.platform === "win32") return 0;
+            const output = child_process.execSync(`ps -o rss= -p ${pid}`, {
+                encoding: "utf8",
+                timeout: 500,
+            });
             const rssKb = parseInt(output.trim(), 10);
-            if (isNaN(rssKb)) return 0;
-            return Math.round(rssKb / 1024);
-        } catch (e) {
+            return isNaN(rssKb) ? 0 : Math.round(rssKb / 1024);
+        } catch {
             return 0;
         }
     }
 
-    /**
-     * Compile et sert les données d'état au format JSON.
-     */
     serveStatusData(req, res) {
         refreshKnownApps();
-        const proxyRam = this.getAppRam(process.pid);
+        const proxyRam = this.getAppRam(process.pid) || Math.round(process.memoryUsage().rss / (1024 * 1024));
         let totalRam = proxyRam;
         const appsList = [];
 
@@ -56,22 +69,32 @@ class StatusApp extends App {
             });
         }
 
-        const payload = JSON.stringify({ proxyRam, totalRam, apps: appsList });
-        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+        const payload = JSON.stringify({
+            proxyRam,
+            totalRam,
+            uptimeSeconds: Math.round(process.uptime()),
+            apps: appsList,
+        });
+
+        res.writeHead(200, {
+            "Content-Type": "application/json; charset=utf-8",
+            "Cache-Control": "no-store",
+        });
         res.end(payload);
     }
 
-    /**
-     * Lit et sert le fichier HTML statique externe 'status.html'.
-     */
     serveStatusPage(req, res) {
         const htmlPath = path.join(__dirname, "status.html");
         if (fs.existsSync(htmlPath)) {
-            res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+            res.writeHead(200, {
+                "Content-Type": "text/html; charset=utf-8",
+            });
             fs.createReadStream(htmlPath).pipe(res);
         } else {
-            res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-            res.end("Page de statut introuvable.");
+            res.writeHead(404, {
+                "Content-Type": "text/plain; charset=utf-8",
+            });
+            res.end("Not Found");
         }
     }
 }

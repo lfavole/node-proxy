@@ -1,58 +1,100 @@
 /**
  * @file app.js
- * @description Pivot de détection et registre des sous-applications chargées dynamiquement.
+ * @description Dynamic detection and registry for sub-applications.
+ * Uses caching and throttling to eliminate redundant synchronous disk I/O.
  */
 
 const fs = require("fs");
 const path = require("path");
-
 const config = require("./config");
 const App = require("./app-base");
 const PythonApp = require("./app-types/python");
 const NodeApp = require("./app-types/node");
 const StaticApp = require("./app-types/static");
 
-/**
- * Analyse le système de fichiers pour instancier la bonne sous-classe ou lever une erreur.
- */
-App.create = function(name, fullPath) {
-    // Détection d'une structure Python
+// Polymorphic detection based on directory file structure
+App.create = function (name, fullPath) {
+    // Python application detection
     if (fs.existsSync(path.join(fullPath, "app.py"))) {
         return new PythonApp(name, fullPath);
     }
-    // Détection d'une structure Node.js
-    if (fs.existsSync(path.join(fullPath, "package.json")) || fs.existsSync(path.join(fullPath, "server", "package.json"))) {
+
+    // Node.js application detection
+    if (
+        fs.existsSync(path.join(fullPath, "package.json")) ||
+        fs.existsSync(path.join(fullPath, "server", "package.json"))
+    ) {
         return new NodeApp(name, fullPath);
     }
-    // Détection d'une structure Statique pure
+
+    // Static HTML application detection
     if (fs.existsSync(path.join(fullPath, "index.html"))) {
         return new StaticApp(name, fullPath);
     }
 
-    throw new Error(`Type d'application inconnu pour le dossier : ${name}`);
+    throw new Error(`Unknown application type for folder: ${name}`);
 };
 
-/**
- * Parcourt le répertoire pour mettre à jour la liste des applications connues.
- */
-function refreshKnownApps() {
-    const files = fs.readdirSync(config.BASE_DIR);
+// Reserved directories to ignore during scan
+const IGNORED_DIRS = new Set([
+    "node_modules",
+    "logs",
+    "proxy",
+    "node-proxy",
+    "dist",
+    "src",
+    ".git",
+    ".venv",
+    "coverage",
+]);
 
-    for (const file of files) {
-        if (file.startsWith(".") || file == "node_modules" || file == "logs" || file == "proxy") continue;
+let lastRefreshTime = 0;
+// Scan cooldown: at most once every 3 seconds
+const REFRESH_THROTTLE_MS = 3000;
 
-        const fullPath = path.join(config.BASE_DIR, file);
-        if (!fs.statSync(fullPath).isDirectory()) continue;  // Filtre uniquement les dossiers d'applications
+function refreshKnownApps(force = false) {
+    const now = Date.now();
+    if (!force && now - lastRefreshTime < REFRESH_THROTTLE_MS) {
+        // Skip redundant disk reads on high traffic
+        return;
+    }
+    lastRefreshTime = now;
 
-        if (!config.apps.has(file)) {
-            try {
-                const appInstance = App.create(file, fullPath);  // Détection polymorphique
-                config.apps.set(file, appInstance);  // Enregistrement dans la Map globale
-            } catch (err) {
-                console.error(`[PROXY ERROR] ${err.message}`);
+    if (!fs.existsSync(config.BASE_DIR)) {
+        return;
+    }
+
+    try {
+        const entries = fs.readdirSync(config.BASE_DIR, { withFileTypes: true });
+
+        for (const entry of entries) {
+            if (!entry.isDirectory()) continue;
+            const folderName = entry.name;
+
+            if (folderName.startsWith(".") || IGNORED_DIRS.has(folderName)) {
+                continue;
+            }
+
+            if (!config.apps.has(folderName)) {
+                const fullPath = path.join(config.BASE_DIR, folderName);
+                try {
+                    const appInstance = App.create(folderName, fullPath);
+                    config.apps.set(folderName, appInstance);
+                    console.log(`[PROXY] Detected and registered application: ${folderName} (${appInstance.type})`);
+                } catch (err) {
+                    // Unrecognized folder ignored silently
+                }
             }
         }
+    } catch (err) {
+        console.error(`[PROXY ERROR] Failed scanning ${config.BASE_DIR}: ${err.message}`);
     }
 }
 
-module.exports = { App, PythonApp, NodeApp, StaticApp, refreshKnownApps };
+module.exports = {
+    App,
+    PythonApp,
+    NodeApp,
+    StaticApp,
+    refreshKnownApps,
+};

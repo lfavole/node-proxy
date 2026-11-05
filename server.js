@@ -1,7 +1,7 @@
 /**
  * @file server.js
- * @description Serveur HTTP principal gérant la couche de routage d'entrée,
- * la distribution vers le stockage statique ou le proxying vers les sockets applicatives.
+ * @description High-performance HTTP and WebSocket reverse proxy server.
+ * Optimized for minimal RAM footprint, zero external dependencies, and direct streaming.
  */
 
 const fs = require("fs");
@@ -9,19 +9,61 @@ const http = require("http");
 const net = require("net");
 const path = require("path");
 const stream = require("stream");
-
 const config = require("./config");
 const { refreshKnownApps } = require("./app");
 const statusApp = require("./status");
 
+// In-memory cache of the loading HTML template to avoid repeated disk reads
+let cachedLoadingTemplate = null;
+
+function getLoadingTemplate() {
+    if (cachedLoadingTemplate) return cachedLoadingTemplate;
+    const minPath = path.join(__dirname, "loading.min.html");
+    const stdPath = path.join(__dirname, "loading.html");
+    const target = [
+        minPath,
+        stdPath,
+    ].find((p) => fs.existsSync(p));
+
+    if (target) {
+        cachedLoadingTemplate = fs.readFileSync(target, "utf8");
+    }
+    return cachedLoadingTemplate;
+}
+
+function escapeHtml(str) {
+    return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+
+function handleAppLoadingResponse(res, appName) {
+    const template = getLoadingTemplate();
+    const safeName = escapeHtml(appName);
+    if (template) {
+        res.writeHead(503, {
+            "Content-Type": "text/html; charset=utf-8",
+        });
+        res.end(template.replace(/\${appName}/g, safeName));
+    } else {
+        res.writeHead(503, {
+            "Content-Type": "text/plain; charset=utf-8",
+            Refresh: "3",
+        });
+        res.end("Service Unavailable: Application is starting, please wait...");
+    }
+}
+
 function proxyRequest(app, req, res) {
-    // Injection des en-têtes de traçabilité IP pour les sous-applications
-    const remoteIp = req.socket.remoteAddress;
-    req.headers['x-forwarded-for'] = req.headers['x-forwarded-for'] 
-        ? `${req.headers['x-forwarded-for']}, ${remoteIp}` 
+    const remoteIp = req.socket.remoteAddress || "127.0.0.1";
+    req.headers["x-forwarded-for"] = req.headers["x-forwarded-for"]
+        ? `${req.headers["x-forwarded-for"]}, ${remoteIp}`
         : remoteIp;
-    req.headers['x-forwarded-proto'] = req.headers['x-forwarded-proto'] || (req.socket.encrypted ? 'https' : 'http');
-    req.headers['x-forwarded-host'] = req.headers.host || '';
+    req.headers["x-forwarded-proto"] = req.headers["x-forwarded-proto"] || (req.socket.encrypted ? "https" : "http");
+    req.headers["x-forwarded-host"] = req.headers.host || "";
 
     const options = {
         hostname: "127.0.0.1",
@@ -33,37 +75,39 @@ function proxyRequest(app, req, res) {
     };
 
     const proxyReq = http.request(options, (proxyRes) => {
-        if (!res.headersSent)
+        if (!res.headersSent) {
             res.writeHead(proxyRes.statusCode, proxyRes.headers);
-
+        }
         stream.pipeline(proxyRes, res, (err) => {
-            if (err) console.error(`[PROXY DOWNLOAD PIPE ERR] ${err.message}`);
+            if (err && err.code !== "ERR_STREAM_PREMATURE_CLOSE") {
+                console.error(`[PROXY DOWNLOAD PIPE ERR] ${err.message}`);
+            }
         });
     });
 
-    // On ne coupe la socket du proxy que si l'application proxiée
-    // ne donne absolument aucun signe de vie pendant 2 minutes (socket figée).
     proxyReq.setTimeout(120000, () => {
-        console.error(`[PROXY TIMEOUT] L'application sur le port ${app.port} ne répond plus.`);
+        console.error(`[PROXY TIMEOUT] Application on port ${app.port} is not responding.`);
         proxyReq.destroy();
         if (!res.headersSent) {
-            res.writeHead(504, { "Content-Type": "text/plain; charset=utf-8" });
+            res.writeHead(504, {
+                "Content-Type": "text/plain; charset=utf-8",
+            });
             res.end("Gateway Timeout");
         }
     });
 
     proxyReq.on("error", (err) => {
         if (!res.headersSent) {
-            res.writeHead(502, { "Content-Type": "text/plain; charset=utf-8" });
+            res.writeHead(502, {
+                "Content-Type": "text/plain; charset=utf-8",
+            });
             res.end("Bad Gateway");
         }
         req.destroy();
-        console.error(`[PROXY REQ ERR] ${err.message}`);
     });
 
     stream.pipeline(req, proxyReq, (err) => {
-        if (err) {
-            console.error(`[PROXY REQ PIPE ERR] ${err.message}`);
+        if (err && err.code !== "ERR_STREAM_PREMATURE_CLOSE") {
             req.destroy();
         }
     });
@@ -77,94 +121,77 @@ function proxyWebSocket(app, req, socket, head) {
         }
         rawHeaders += "\r\n";
 
-        // CORRECTIF BACKPRESSURE (Écriture initiale sécurisée)
-        if (!targetSocket.write(rawHeaders) || (head?.length > 0 && !targetSocket.write(head))) {
-            socket.pause(); // On met le client en pause si le tampon de l'application cible s'engorge
+        if (!targetSocket.write(rawHeaders) || (head && head.length > 0 && !targetSocket.write(head))) {
+            socket.pause();
         }
-        targetSocket.on('drain', () => socket.resume());
+        targetSocket.on("drain", () => socket.resume());
 
-        stream.pipeline(socket, targetSocket, (err) => {
-            if (err) console.error(`[WS PIPE ERR] ${err.message}`);
-        });
-        stream.pipeline(targetSocket, socket, (err) => {
-            if (err) console.error(`[WS TARGET PIPE ERR] ${err.message}`);
-        });
+        stream.pipeline(socket, targetSocket, () => {});
+        stream.pipeline(targetSocket, socket, () => {});
     });
 
-    // On garde l'application active si le socket reste connecté
-    let intv = setInterval(() => app.lastAccessed = Date.now(), 30000);
+    const intv = setInterval(() => {
+        app.lastAccessed = Date.now();
+    }, 30000);
+    intv.unref();
 
-    // Événements de fermeture / fin
-    targetSocket.on("end", () => {
-        console.log("[WS] targetSocket ended");
+    const cleanup = () => {
         clearInterval(intv);
-        // fermer la socket client si besoin
+    };
+
+    targetSocket.on("end", () => {
+        cleanup();
         socket.end();
     });
-
     targetSocket.on("close", (hadError) => {
-        console.log("[WS] targetSocket closed", { hadError });
-        clearInterval(intv);
-        // Si fermé sans erreur, détruire proprement côté client
-        if (!hadError)
-            socket.end();
-        else
-            socket.destroy();
+        cleanup();
+        if (!hadError) socket.end();
+        else socket.destroy();
     });
-
-    // Propager erreurs
     targetSocket.on("error", (err) => {
-        console.error("[WS TARGET ERR]", err.message);
-        clearInterval(intv);
+        cleanup();
         socket.destroy(err);
     });
-
     socket.on("error", (err) => {
-        console.error("[WS CLIENT ERR]", err.message);
-        clearInterval(intv);
+        cleanup();
         targetSocket.destroy(err);
     });
-
-    socket.on("close", (hadError) => {
-        console.log("[WS] client socket closed", { hadError });
-        clearInterval(intv);
+    socket.on("close", () => {
+        cleanup();
         targetSocket.destroy();
     });
 }
 
 function extractSubdomain(host) {
-    const cleanHost = host.split(":")[0];
-    if (cleanHost == config.DOMAIN) return null;
-    if (cleanHost.endsWith(`.${config.DOMAIN}`)) return cleanHost.slice(0, -(config.DOMAIN.length + 1));
+    if (!host) return null;
+    const cleanHost = host.split(":")[0].toLowerCase();
+    const domain = config.DOMAIN.toLowerCase();
+
+    if (cleanHost === domain) return null;
+    if (cleanHost.endsWith(`.${domain}`)) {
+        return cleanHost.slice(0, -(domain.length + 1));
+    }
+
+    // Local development support (e.g., app.localhost)
+    if (cleanHost.endsWith(".localhost")) {
+        return cleanHost.slice(0, -".localhost".length);
+    }
+
     return null;
 }
 
-/**
- * Renvoie un mini-script de rechargement en boucle avec un code d'erreur 503 Service Unavailable.
- */
-function handleAppLoadingResponse(res, appName) {
-    const htmlPath = path.join(__dirname, "loading.html");
-    const minHtmlPath = path.join(__dirname, "loading.min.html");
-    const path = [minHtmlPath, htmlPath].find(fs.existsSync);
-
-    if (path) {
-        res.writeHead(503, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(fs.readFileSync(path, "utf8").replace("${appName}", appName.replace("<", "&lt;")));
-
-    } else {
-        res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8", "Refresh": "5" });
-        res.end(`Application '${appName}' toujours en cours de chargement`);
-    }
-}
-
 function startServer() {
+    refreshKnownApps(true);
+
     const server = http.createServer((req, res) => {
         const host = req.headers.host || "";
-        // Extraction ultra-légère du pathname sans url.parse
-        const pathname = req.url.split('?')[0];
+        const rawUrl = req.url;
+        const qIdx = rawUrl.indexOf("?");
+        const pathname = qIdx === -1 ? rawUrl : rawUrl.slice(0, qIdx);
 
-        if (host.startsWith("status.")) {
-            if (pathname == "/status/data") {
+        // Status and health monitoring routing
+        if (host.startsWith("status.") || pathname.startsWith("/_status") || pathname.startsWith("/status")) {
+            if (pathname === "/status/data" || pathname === "/_status/data") {
                 statusApp.serveStatusData(req, res);
                 return;
             }
@@ -172,26 +199,39 @@ function startServer() {
             return;
         }
 
-        const subdomain = extractSubdomain(host);
+        let subdomain = extractSubdomain(host);
+
+        // Fallback for root domain, direct IP, or localhost access
         if (!subdomain) {
-            res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-            res.end("Sous-domaine non spécifié");
-            return;
+            if (config.DEFAULT_APP && config.apps.has(config.DEFAULT_APP)) {
+                subdomain = config.DEFAULT_APP;
+            } else if (config.apps.has("www")) {
+                subdomain = "www";
+            } else {
+                // Neutral response for root domain without exposing server internals
+                res.writeHead(200, {
+                    "Content-Type": "text/html; charset=utf-8",
+                });
+                res.end("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Proxy Service</title><style>body{font-family:sans-serif;margin:40px;color:#333}</style></head><body><h1>Proxy Service Online</h1><p>Reverse proxy gateway is operational.</p><p><a href=\"/status\">Status Page</a></p></body></html>");
+                return;
+            }
         }
 
+        // Throttled scan for new applications
         refreshKnownApps();
-        const appInstance = config.apps.get(subdomain);
 
+        const appInstance = config.apps.get(subdomain);
         if (!appInstance) {
-            res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-            res.end("Application non trouvée");
+            res.writeHead(404, {
+                "Content-Type": "text/plain; charset=utf-8",
+            });
+            res.end("Not Found");
             return;
         }
 
-        if (pathname == "/_hc") {
-            // On utilise le code 404 en cas de succès, car la page de maintenance d'Infomaniak
-            // utilise le code 200
-            res.writeHead(appInstance.status == "running" ? 404 : 503);
+        // Dedicated lightweight health check endpoint
+        if (pathname === "/_hc") {
+            res.writeHead(appInstance.status === "running" ? 404 : 503);
             res.end("");
             return;
         }
@@ -200,44 +240,52 @@ function startServer() {
             const startTime = Date.now();
             const MAX_WAIT_MS = 60000;
             let isClientConnected = true;
-            req.on("close", () => { isClientConnected = false; });
+
+            req.on("close", () => {
+                isClientConnected = false;
+            });
+
             while (isClientConnected) {
                 try {
                     const app = await appInstance.getOrStartApp();
-                    if (app.type == "static")
-                        serveStaticApp(app, req, res);
-                    else
+                    if (!app) throw new Error("Application instance undefined");
+
+                    // Static file routing vs reverse proxy routing
+                    if (app.type === "static") {
+                        app.serveStaticApp(req, res);
+                    } else {
                         proxyRequest(app, req, res);
+                    }
                     break;
                 } catch (err) {
-                    if (err.message == "Application toujours en cours de chargement" || appInstance.status == "start") {
-                        const isBrowserNavigation = (
-                            req.headers['sec-fetch-mode'] == 'navigate' 
-                            && req.headers['sec-fetch-dest'] == 'document'
-                        );
-    
-                        const prefersHtml = (
-                            req.headers['accept']
-                            && req.headers['accept'].includes('text/html')
-                        );
-                        const isHumanBrowser = isBrowserNavigation || (!req.headers['sec-fetch-mode'] && prefersHtml);
-    
-                        if (isHumanBrowser) {
+                    if (err.message === "Application is still loading" || appInstance.status === "start") {
+                        const isBrowserNav =
+                            req.headers["sec-fetch-mode"] === "navigate" &&
+                            req.headers["sec-fetch-dest"] === "document";
+                        const prefersHtml = req.headers["accept"] && req.headers["accept"].includes("text/html");
+                        const isHuman = isBrowserNav || (!req.headers["sec-fetch-mode"] && prefersHtml);
+
+                        if (isHuman) {
                             handleAppLoadingResponse(res, subdomain);
                             return;
                         }
 
-                        // Gestion du timeout pour les non-navigateurs (Long Polling)
                         if (Date.now() - startTime > MAX_WAIT_MS) {
-                            res.writeHead(504, { "Content-Type": "text/plain; charset=utf-8" });
-                            res.end(`L'application '${subdomain}' a mis trop de temps à démarrer.`);
+                            res.writeHead(504, {
+                                "Content-Type": "text/plain; charset=utf-8",
+                            });
+                            res.end("Gateway Timeout");
                             return;
                         }
 
-                        await new Promise(resolve => setTimeout(resolve, 500));
+                        await new Promise((resolve) => setTimeout(resolve, 400));
                     } else {
-                        res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
-                        res.end(err.message || "Erreur interne du proxy");
+                        if (!res.headersSent) {
+                            res.writeHead(500, {
+                                "Content-Type": "text/plain; charset=utf-8",
+                            });
+                            res.end("Internal Server Error");
+                        }
                         return;
                     }
                 }
@@ -245,12 +293,8 @@ function startServer() {
         })();
     });
 
-    // Configuration des timeouts de la socket réseau
-    // Désactive le timeout d'inactivité global (laisser le flux gérer)
     server.timeout = 0;
-    // Maintient la connexion persistante ouverte pendant 60s entre deux requêtes
     server.keepAliveTimeout = 60000;
-    // Laisse 30s au client pour envoyer ses en-têtes HTTP au démarrage
     server.headersTimeout = 30000;
 
     server.on("upgrade", (req, socket, head) => {
@@ -262,53 +306,64 @@ function startServer() {
         const appInstance = config.apps.get(subdomain);
         if (!appInstance) return socket.destroy();
 
-        appInstance.getOrStartApp()
+        appInstance
+            .getOrStartApp()
             .then((app) => {
-                if (app.type == "static") socket.destroy();
+                if (app.type === "static") socket.destroy();
                 else proxyWebSocket(app, req, socket, head);
             })
             .catch(() => socket.destroy());
     });
 
-    // Health check récurrent parallélisé
-    setInterval(async () => {
+    // Periodic idle cleanup
+    const idleCheckInterval = setInterval(async () => {
         const now = Date.now();
         const appsArray = Array.from(config.apps.entries());
 
-        // Exécution en parallèle des tests
-        await Promise.allSettled(appsArray.map(async ([appName, app]) => {
-            if (app.status == "running" && app.type != "static") {
-                const ready = await app.isAppReady();
-                if (!ready) {
-                    console.log(`[PROXY] App ${appName} stopped responding. Cleaning up.`);
-                    app.stopAppCleanly();
-                    return;
+        await Promise.allSettled(
+            appsArray.map(async ([appName, app]) => {
+                if (app.status === "running" && app.type !== "static") {
+                    const ready = await app.isAppReady();
+                    if (!ready) {
+                        console.log(`[PROXY] Application ${appName} is unresponsive. Cleaning up.`);
+                        app.stopAppCleanly();
+                        return;
+                    }
+                    if (now - app.lastAccessed > config.IDLE_TIMEOUT) {
+                        console.log(`[PROXY] Application ${appName} has been idle for over 5 minutes. Stopping.`);
+                        app.stopAppCleanly();
+                    }
                 }
-                if (now - app.lastAccessed > config.IDLE_TIMEOUT) {
-                    console.log(`[PROXY] App ${appName} has been idle for over 5 minutes. Shutting down.`);
-                    app.stopAppCleanly();
-                }
-            }
-        }));
+            }),
+        );
     }, config.HEALTH_CHECK_INTERVAL);
 
-    server.listen(config.PROXY_PORT, () => console.log(`[PROXY] Reverse Proxy listening on port ${config.PROXY_PORT}`));
+    idleCheckInterval.unref();
+
+    // Periodic garbage collection suggestion if exposed via node flag
+    if (global.gc) {
+        const gcInterval = setInterval(() => {
+            global.gc();
+        }, 5 * 60 * 1000);
+        gcInterval.unref();
+    }
+
+    server.listen(config.PROXY_PORT, () => {
+        console.log(`[PROXY] Reverse Proxy active on port ${config.PROXY_PORT} (Domain: ${config.DOMAIN})`);
+    });
+
+    return server;
 }
 
-// Capture des erreurs fatales globales pour maintenir le proxy en vie
+// Global process error safety guards
 process.on("uncaughtException", (err) => {
-    console.error(`[PROXY CRITICAL CRASH PREVENTED] Uncaught Exception: ${err.message}`, err.stack);
+    console.error(`[PROXY CRITICAL ERROR PREVENTED] Uncaught Exception: ${err.message}`, err.stack);
 });
 
 process.on("unhandledRejection", (reason, promise) => {
-    console.error("[PROXY CRITICAL CRASH PREVENTED] Unhandled Rejection at:", promise, "reason:", reason);
+    console.error("[PROXY CRITICAL ERROR PREVENTED] Unhandled Rejection at:", promise, "reason:", reason);
 });
 
-// Toutes les 5 minutes, on suggère une libération de la mémoire non utilisée au système
-setInterval(() => {
-    if (global.gc) {
-        global.gc();
-    }
-}, 5 * 60 * 1000);
-
-module.exports = { startServer };
+module.exports = {
+    startServer,
+};

@@ -1,0 +1,16 @@
+{
+    "name": "node-proxy",
+    "version": "1.0.0",
+    "description": "Lightweight autonomous reverse proxy for Node.js, Python, and static HTML",
+    "main": "index.js",
+    "scripts": {
+        "start": "node index.js",
+        "build": "node index.js --build",
+        "test": "node test/run-tests.js"
+    },
+    "engines": {
+        "node": ">=18.0.0"
+    },
+    "private": true,
+    "dependencies": {}
+}

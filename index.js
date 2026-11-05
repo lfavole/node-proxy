@@ -1,22 +1,21 @@
 /**
  * @file index.js
- * @description Point d'entrée principal unique de l'architecture proxy/build.
- * Détermine le contexte d'exécution via les arguments d'appel.
+ * @description Single main entry point for the proxy and build architecture.
+ * Determines the execution context via command-line arguments.
  */
 
-// Sélection du contexte d'exécution principal
+// Check execution context
 if (process.argv.includes("--build")) {
     const { performBuild } = require("./build");
-
-    // Mode Compilateur / Build système
-    performBuild().then(() => process.exit(0)).catch((err) => {
-        console.error("[CRITICAL BUILD ERROR]", err);
-        process.exit(1);
-    });
-
+    // System compilation and build mode
+    performBuild()
+        .then(() => process.exit(0))
+        .catch((err) => {
+            console.error("[CRITICAL BUILD ERROR]", err);
+            process.exit(1);
+        });
 } else {
     const { startServer } = require("./server");
-
-    // Mode Serveur HTTP Reverse Proxy Standard
+    // Standard HTTP reverse proxy mode
     startServer();
 }

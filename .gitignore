@@ -1,1 +1,13 @@
 .hist
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+logs/
+.env
+.env.*.local
+.DS_Store
+*.swp
+*~

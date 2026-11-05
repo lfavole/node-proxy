@@ -1,24 +1,24 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>Application en cours de chargement...</title>
+    <title>Application Loading</title>
     <style>
         body {
-            font-family: sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             text-align: center;
             margin-top: 100px;
             background: #fafafa;
-            color: #555;
+            color: #444;
         }
         .loader {
             border: 4px solid #f3f3f3;
-            border-top: 4px solid #3498db;
+            border-top: 4px solid #0066cc;
             border-radius: 50%;
-            width: 40px;
-            height: 40px;
+            width: 44px;
+            height: 44px;
             animation: spin 1s linear infinite;
-            margin: 20px auto;
+            margin: 24px auto;
         }
         @keyframes spin {
             0% { transform: rotate(0deg); }
@@ -28,20 +28,22 @@
 </head>
 <body>
     <div class="loader"></div>
-    <h2>L'application ${appName} démarre.</h2>
-    <p>Veuillez patienter, cette page se rechargera automatiquement dès qu'elle sera prête.</p>
+    <h2>Application is starting</h2>
+    <p>Please wait, this page will reload automatically once ready.</p>
     <script>
-        // Vérification cyclique en tâche de fond
+        // Periodic background poll to check if application has finished booting
         setInterval(async () => {
             try {
-                const response = await fetch("/_hc", { method: 'HEAD', cache: 'no-store' });
-                // Si le serveur répond hors code 404 (on ne peut pas utiliser le code 200,
-                // utilisé par la page de maintenance Infomaniak), on recharge la page
-                if (response.status == 404) {
+                const response = await fetch("/_hc", {
+                    method: "HEAD",
+                    cache: "no-store",
+                });
+                // Status 404 indicates the application is now running
+                if (response.status === 404) {
                     window.location.reload();
                 }
             } catch (e) {
-                // Consomme l'erreur réseau si le serveur ne répond temporairement pas
+                // Ignore transient network errors during startup
             }
         }, 1500);
     </script>
