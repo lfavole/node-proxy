@@ -37,7 +37,7 @@ class StatusApp extends App {
 
         // Asynchronous non-blocking subprocess fallback
         return new Promise((resolve) => {
-            if (process.platform === "win32") return resolve(0);
+            if (process.platform == "win32") return resolve(0);
             child_process.exec(
                 `ps -o rss= -p ${pid}`,
                 {

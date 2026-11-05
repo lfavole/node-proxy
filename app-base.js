@@ -192,7 +192,7 @@ class App {
             const proc = child_process.spawn(command, args, options);
             proc.stdout?.on("data", (d) => process.stdout.write(d));
             proc.stderr?.on("data", (d) => process.stderr.write(d));
-            proc.on("close", (code) => resolve(code === 0));
+            proc.on("close", (code) => resolve(code == 0));
         });
     }
 
@@ -231,7 +231,7 @@ class App {
      * Retrieves the running application or starts it with safe promise deduplication.
      */
     async getOrStartApp() {
-        if (this.status === "running") {
+        if (this.status == "running") {
             this.lastAccessed = Date.now();
             return this;
         }
@@ -242,7 +242,7 @@ class App {
             return this;
         }
 
-        if (this.status === "start") {
+        if (this.status == "start") {
             const ready = await this.isAppReady();
             if (ready) {
                 this.status = "running";
@@ -291,7 +291,7 @@ class App {
 
             // Guaranteed SIGKILL escalation using local variable reference
             setTimeout(() => {
-                if (procToKill.exitCode === null) {
+                if (procToKill.exitCode == null) {
                     try {
                         if (isPosix && procToKill.pid) {
                             process.kill(-procToKill.pid, "SIGKILL");

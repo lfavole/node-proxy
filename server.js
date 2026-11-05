@@ -118,7 +118,7 @@ async function handleAppLoadingResponse(req, res, appName) {
 
     // Fetch the Exponential Moving Average loading estimation for this app
     const estMs = await metrics.getEstimatedLoadingTime(appName);
-    const estSec = (estMs / 1000).toFixed(1);
+    const estSec = Math.max(1, Math.round(estMs / 1000));
 
     if (template) {
         const rendered = template
@@ -126,10 +126,7 @@ async function handleAppLoadingResponse(req, res, appName) {
             .replace(/\${title}/g, text.title)
             .replace(/\${heading}/g, text.heading)
             .replace(/\${message}/g, text.message)
-            .replace(/\${estLabel}/g, text.estLabel)
-            .replace(/\${estSec}/g, estSec)
-            .replace(/\${secLabel}/g, text.secLabel)
-            .replace(/\${estMs}/g, estMs.toString());
+            .replace(/\${estSec}/g, estSec.toString());
 
         res.writeHead(503, {
             "Content-Type": "text/html; charset=utf-8",
@@ -166,7 +163,7 @@ function proxyRequest(app, req, res) {
             res.writeHead(proxyRes.statusCode, proxyRes.headers);
         }
         stream.pipeline(proxyRes, res, (err) => {
-            if (err && err.code !== "ERR_STREAM_PREMATURE_CLOSE") {
+            if (err && err.code != "ERR_STREAM_PREMATURE_CLOSE") {
                 console.error(`[PROXY DOWNLOAD PIPE ERR] ${err.message}`);
             }
         });
@@ -194,7 +191,7 @@ function proxyRequest(app, req, res) {
     });
 
     stream.pipeline(req, proxyReq, (err) => {
-        if (err && err.code !== "ERR_STREAM_PREMATURE_CLOSE") {
+        if (err && err.code != "ERR_STREAM_PREMATURE_CLOSE") {
             req.destroy();
         }
     });
@@ -254,7 +251,7 @@ function extractSubdomain(host) {
     const cleanHost = host.split(":")[0].toLowerCase();
     const domain = config.DOMAIN.toLowerCase();
 
-    if (cleanHost === domain) return null;
+    if (cleanHost == domain) return null;
     if (cleanHost.endsWith(`.${domain}`)) {
         return cleanHost.slice(0, -(domain.length + 1));
     }
@@ -275,11 +272,11 @@ function startServer() {
         const host = req.headers.host || "";
         const rawUrl = req.url;
         const qIdx = rawUrl.indexOf("?");
-        const pathname = qIdx === -1 ? rawUrl : rawUrl.slice(0, qIdx);
+        const pathname = qIdx == -1 ? rawUrl : rawUrl.slice(0, qIdx);
 
         // Status and health monitoring routing
         if (host.startsWith("status.") || pathname.startsWith("/_status") || pathname.startsWith("/status")) {
-            if (pathname === "/status/data" || pathname === "/_status/data") {
+            if (pathname == "/status/data" || pathname == "/_status/data") {
                 await statusApp.serveStatusData(req, res);
                 return;
             }
@@ -318,8 +315,8 @@ function startServer() {
         }
 
         // Dedicated lightweight health check endpoint
-        if (pathname === "/_hc") {
-            res.writeHead(appInstance.status === "running" ? 404 : 503);
+        if (pathname == "/_hc") {
+            res.writeHead(appInstance.status == "running" ? 404 : 503);
             res.end("");
             return;
         }
@@ -339,17 +336,17 @@ function startServer() {
                     if (!app) throw new Error("Application instance undefined");
 
                     // Static file routing vs reverse proxy routing
-                    if (app.type === "static") {
+                    if (app.type == "static") {
                         app.serveStaticApp(req, res);
                     } else {
                         proxyRequest(app, req, res);
                     }
                     break;
                 } catch (err) {
-                    if (err.message === "Application is still loading" || appInstance.status === "start") {
+                    if (err.message == "Application is still loading" || appInstance.status == "start") {
                         const isBrowserNav =
-                            req.headers["sec-fetch-mode"] === "navigate" &&
-                            req.headers["sec-fetch-dest"] === "document";
+                            req.headers["sec-fetch-mode"] == "navigate" &&
+                            req.headers["sec-fetch-dest"] == "document";
                         const prefersHtml = req.headers["accept"] && req.headers["accept"].includes("text/html");
                         const isHuman = isBrowserNav || (!req.headers["sec-fetch-mode"] && prefersHtml);
 
@@ -397,7 +394,7 @@ function startServer() {
         appInstance
             .getOrStartApp()
             .then((app) => {
-                if (app.type === "static") socket.destroy();
+                if (app.type == "static") socket.destroy();
                 else proxyWebSocket(app, req, socket, head);
             })
             .catch(() => socket.destroy());
@@ -410,7 +407,7 @@ function startServer() {
 
         await Promise.allSettled(
             appsArray.map(async ([appName, app]) => {
-                if (app.status === "running" && app.type !== "static") {
+                if (app.status == "running" && app.type != "static") {
                     const ready = await app.isAppReady();
                     if (!ready) {
                         console.log(`[PROXY] Application ${appName} is unresponsive. Cleaning up.`);

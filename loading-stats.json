@@ -1,20 +1,20 @@
 {
     "python-app": {
-        "emaMs": 310,
-        "lastMs": 310,
-        "samples": 1,
-        "updatedAt": "2026-11-05T12:19:01.813Z"
+        "emaMs": 265,
+        "lastMs": 161,
+        "samples": 2,
+        "updatedAt": "2026-11-05T12:47:00.147Z"
     },
     "node-app": {
         "emaMs": 436,
         "lastMs": 436,
-        "samples": 1,
-        "updatedAt": "2026-11-05T12:19:02.270Z"
+        "samples": 2,
+        "updatedAt": "2026-11-05T12:47:00.600Z"
     },
     "crash-delayed-app": {
-        "emaMs": 393,
+        "emaMs": 370,
         "lastMs": 282,
-        "samples": 2,
-        "updatedAt": "2026-11-05T12:19:06.759Z"
+        "samples": 4,
+        "updatedAt": "2026-11-05T12:47:05.113Z"
     }
 }

@@ -64,7 +64,7 @@ class StaticApp extends App {
         // Lightweight extraction of path without url.parse
         const rawUrl = req.url;
         const queryIdx = rawUrl.indexOf("?");
-        const pathOnly = queryIdx === -1 ? rawUrl : rawUrl.slice(0, queryIdx);
+        const pathOnly = queryIdx == -1 ? rawUrl : rawUrl.slice(0, queryIdx);
 
         let decodedPath;
         try {
@@ -77,7 +77,7 @@ class StaticApp extends App {
             return;
         }
 
-        if (decodedPath === "/" || decodedPath === "") {
+        if (decodedPath == "/" || decodedPath == "") {
             decodedPath = "/index.html";
         }
 

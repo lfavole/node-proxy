@@ -5,72 +5,42 @@
     <title>${title}</title>
     <style>
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            font: 1em sans-serif;
             text-align: center;
-            margin-top: 12vh;
-            background: #fafafa;
-            color: #333;
-        }
-        .box {
-            max-width: 380px;
-            margin: auto;
-            padding: 28px 24px;
-            background: #fff;
-            border: 1px solid #e5e7eb;
-            border-radius: 12px;
-            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04);
+            margin-top: 6em;
+            background: #eee;
+            color: #555;
         }
         h2 {
-            font-size: 18px;
-            margin: 0 0 8px;
-            color: #111;
+            margin: 0 0 0.5em;
         }
-        .desc {
-            color: #666;
-            font-size: 13px;
-            line-height: 1.5;
-            margin: 0 0 20px;
+        p {
+            color: #777;
+            font-size: 0.9em;
+            margin: 0.5em 0;
         }
-        .bar-wrap {
-            height: 8px;
-            background: #eee;
-            border-radius: 4px;
-            overflow: hidden;
-            margin: 16px 0 10px;
-        }
-        .bar {
-            height: 100%;
+        #bar {
+            height: 6px;
             width: 0;
-            background: #0066cc;
-            border-radius: 4px;
-            transition: width ${estMs}ms cubic-bezier(0.1, 0.5, 0.2, 1);
+            max-width: 320px;
+            background: #39d;
+            margin: 2em auto;
+            border-radius: 3px;
+            animation: p ${estSec}s ease-out forwards;
         }
-        .est {
-            font-size: 11px;
-            color: #888;
-            font-family: monospace;
+        @keyframes p {
+            to {
+                width: 95%;
+            }
         }
     </style>
 </head>
 <body>
-    <div class="box">
-        <h2>${heading}</h2>
-        <p class="desc">${message}</p>
-        <div class="bar-wrap">
-            <div id="pbar" class="bar"></div>
-        </div>
-        <div class="est">${estLabel} ~${estSec} ${secLabel}</div>
-    </div>
+    <h2>${heading}</h2>
+    <p>${message}</p>
+    <div id="bar"></div>
     <script>
-        // Start smooth CSS progress animation matching estimated EMA loading duration
-        requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-                const el = document.getElementById("pbar");
-                if (el) el.style.width = "95%";
-            });
-        });
-
-        // Periodic background poll to check if application is ready
+        // Periodic background poll checking if application port is ready
         setInterval(() => {
             fetch("/_hc", {
                 method: "HEAD",
@@ -78,7 +48,7 @@
             })
                 .then((r) => {
                     // Status 404 indicates the application has started and is listening
-                    if (r.status === 404) {
+                    if (r.status == 404) {
                         location.reload();
                     }
                 })
